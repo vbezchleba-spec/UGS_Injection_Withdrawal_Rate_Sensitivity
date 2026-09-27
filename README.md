@@ -4,7 +4,7 @@ An end-to-end Python pipeline analyzing daily operational dynamics, capacity lim
 
 ## 📊 Model Specification & Results
 
-$$\text{Net\_Injection}_t = \beta_0 + \beta_1 (\text{Fill\_Level}_t) + \beta_2 (\text{Temp\_Anomaly}_t) + \beta_3 (\text{Price\_Change}_t) + \varepsilon_t$$
+$$\mathit{Net\_Injection}_t = \beta_0 + \beta_1 (\mathit{Fill\_Level}_t) + \beta_2 (\mathit{Temp\_Anomaly}_t) + \beta_3 (\mathit{Price\_Change}_t) + \varepsilon_t$$
 
 * **Overall Fit:** Adjusted $R^2 = 0.787$ ($F\text{-stat} = 67.84$, $p < 0.001$)
 * **Diagnostics:** Standard errors adjusted using a **7-lag Newey-West HAC covariance matrix** to resolve high residual autocorrelation ($\text{Durbin-Watson} = 0.383$).
@@ -18,5 +18,5 @@ $$\text{Net\_Injection}_t = \beta_0 + \beta_1 (\text{Fill\_Level}_t) + \beta_2 (
 
 1. Clone the repository:
    ```bash
-   git clone [https://github.com/your-username/european-gas-storage-econometrics.git](https://github.com/your-username/european-gas-storage-econometrics.git)
-   cd european-gas-storage-econometrics
+   git clone [https://github.com/vbezchleba-spec/UGS_Injection_Withdrawal_Rate_Sensitivity.git](https://github.com/vbezchleba-spec/UGS_Injection_Withdrawal_Rate_Sensitivity.git)
+cd UGS_Injection_Withdrawal_Rate_Sensitivity
