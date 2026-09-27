@@ -19,4 +19,3 @@ $$\mathit{Net\_Injection}_t = \beta_0 + \beta_1 (\mathit{Fill\_Level}_t) + \beta
 1. Clone the repository:
    ```bash
    git clone [https://github.com/vbezchleba-spec/UGS_Injection_Withdrawal_Rate_Sensitivity.git](https://github.com/vbezchleba-spec/UGS_Injection_Withdrawal_Rate_Sensitivity.git)
-cd UGS_Injection_Withdrawal_Rate_Sensitivity
