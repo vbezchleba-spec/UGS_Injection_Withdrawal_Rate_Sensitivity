@@ -1,0 +1,20 @@
+# Secret Environment Variables
+.env
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+.venv/
+
+# IDE Settings
+.vscode/
+.idea/
+
+# Output Datasets (Optional - remove if you want final_regression_dataset.csv uploaded)
+# *.csv
+*.csv
