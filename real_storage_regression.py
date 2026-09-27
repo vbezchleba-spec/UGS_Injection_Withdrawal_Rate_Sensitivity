@@ -1,132 +1,137 @@
-import requests
-import pandas as pd
-import yfinance as yf
-import statsmodels.api as sm
-
-# ===================================================================
-# 1. CONFIGURATION & BOUNDARIES
-# ===================================================================
 import os
+import pandas as pd
+import requests
+import statsmodels.api as sm
+import yfinance as yf
 from dotenv import load_dotenv
 
-# Load variables from the .env file
 load_dotenv()
 
-# Get the API key from the environment
-API_KEY = os.getenv("GIE_API_KEY")
+# Configuration
+GIE_API_KEY = os.getenv("GIE_API_KEY")
+if not GIE_API_KEY:
+    raise RuntimeError("Missing GIE_API_KEY in environment variables.")
 
-if not API_KEY:
-    raise ValueError("API key not found! Check if you have the line GIE_API_KEY=your_key in your .env file")
+GIE_HEADERS = {"x-key": GIE_API_KEY}
+TARGET_COUNTRIES = ["AT", "SK"]
+ANALYSIS_START_DATE = "2025-11-01"
 
-HEADERS = {"x-key": API_KEY}
-COUNTRIES = ["AT", "SK"]
-START_DATE_FILTER = "2025-11-01"
 
-print("--- STEP 1: Fetching GIE AGSI+ Storage Data ---")
-storage_data = []
+def fetch_gie_storage_data(countries: list, start_date: str) -> pd.DataFrame:
+    """Fetch and aggregate daily gas storage injection/withdrawal data from GIE AGSI+ API."""
+    records = []
 
-# Paginate to fetch historical daily records past Nov 1, 2025
-for country in COUNTRIES:
-    for page in range(1, 3):
-        url = f"https://agsi.gie.eu/api?country={country}&size=300&page={page}"
-        response = requests.get(url, headers=HEADERS)
-        if response.status_code == 200:
-            raw_json = response.json()
-            data_list = raw_json.get("data", []) if isinstance(raw_json, dict) else raw_json
-            for entry in data_list:
-                raw_date = entry.get("gas_day") or entry.get("gasDayStart") or entry.get("gasDay")
-                storage_data.append({
-                    "Date": raw_date,
-                    "Country": entry.get("code") or country,
-                    "Net_Injection_GWh": float(entry.get("injection", 0) or 0) - float(entry.get("withdrawal", 0) or 0),
-                    "Fill_Level_Pct": float(entry.get("full", 0) or 0)
+    for country in countries:
+        for page in range(1, 3):
+            url = f"https://agsi.gie.eu/api?country={country}&size=300&page={page}"
+            res = requests.get(url, headers=GIE_HEADERS, timeout=10)
+            if res.status_code != 200:
+                continue
+
+            payload = res.json()
+            data = payload.get("data", []) if isinstance(payload, dict) else payload
+
+            for entry in data:
+                date_val = entry.get("gas_day") or entry.get("gasDayStart") or entry.get("gasDay")
+                injection = float(entry.get("injection") or 0)
+                withdrawal = float(entry.get("withdrawal") or 0)
+
+                records.append({
+                    "Date": date_val,
+                    "Country": entry.get("code", country),
+                    "Net_Injection_GWh": injection - withdrawal,
+                    "Fill_Level_Pct": float(entry.get("full") or 0)
                 })
 
-df_storage = pd.DataFrame(storage_data)
-df_storage["Date"] = pd.to_datetime(df_storage["Date"], errors="coerce")
-df_storage = df_storage.dropna(subset=["Date"])
-df_storage = df_storage[df_storage["Date"] >= pd.to_datetime(START_DATE_FILTER)]
+    df = pd.DataFrame(records)
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df = df.dropna(subset=["Date"]).query("Date >= @start_date")
 
-# Aggregate regional nodes (AT + SK) by date
-df_regional = df_storage.groupby("Date").agg({
-    "Net_Injection_GWh": "sum",
-    "Fill_Level_Pct": "mean"
-}).reset_index().sort_values("Date").reset_index(drop=True)
+    # Aggregate AT + SK clusters
+    regional_df = (
+        df.groupby("Date")
+        .agg({"Net_Injection_GWh": "sum", "Fill_Level_Pct": "mean"})
+        .reset_index()
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+    return regional_df
 
-# ===================================================================
-# 2. FETCH HISTORICAL WEATHER DATA (Open-Meteo)
-# ===================================================================
-print("--- STEP 2: Fetching Weather Data ---")
-start_str = df_regional["Date"].min().strftime("%Y-%m-%d")
-end_str = df_regional["Date"].max().strftime("%Y-%m-%d")
 
-weather_url = "https://archive-api.open-meteo.com/v1/archive"
-weather_params = {
-    "latitude": 48.2082,  # Baumgarten / Vienna regional hub
-    "longitude": 16.3738,
-    "start_date": start_str,
-    "end_date": end_str,
-    "daily": "temperature_2m_mean",
-    "timezone": "Europe/Berlin"
-}
-w_response = requests.get(weather_url, params=weather_params)
-w_data = w_response.json()
+def fetch_openmeteo_weather(start_str: str, end_str: str) -> pd.DataFrame:
+    """Pull historical daily mean temperature for the Baumgarten hub region (48.2082, 16.3738)."""
+    params = {
+        "latitude": 48.2082,
+        "longitude": 16.3738,
+        "start_date": start_str,
+        "end_date": end_str,
+        "daily": "temperature_2m_mean",
+        "timezone": "Europe/Berlin"
+    }
+    url = "https://archive-api.open-meteo.com/v1/archive"
+    res = requests.get(url, params=params, timeout=10)
+    res.raise_for_status()
 
-df_weather = pd.DataFrame({
-    "Date": pd.to_datetime(w_data["daily"]["time"]),
-    "Temp_Mean": w_data["daily"]["temperature_2m_mean"]
-})
-df_weather["Temp_Anomaly"] = df_weather["Temp_Mean"] - df_weather["Temp_Mean"].mean()
+    daily = res.json().get("daily", {})
+    df = pd.DataFrame({
+        "Date": pd.to_datetime(daily["time"]),
+        "Temp_Mean": daily["temperature_2m_mean"]
+    })
+    df["Temp_Anomaly"] = df["Temp_Mean"] - df["Temp_Mean"].mean()
+    return df
 
-# ===================================================================
-# 3. FETCH FREE MARKET PRICES (Yahoo Finance TTF)
-# ===================================================================
-print("--- STEP 3: Fetching TTF Gas Prices ---")
-ttf_data = yf.download("TTF=F", start=start_str, end=end_str)
 
-if isinstance(ttf_data.columns, pd.MultiIndex):
-    df_prices = ttf_data['Close'].reset_index()
-else:
-    df_prices = ttf_data[['Close']].reset_index()
+def fetch_ttf_prices(start_str: str, end_str: str) -> pd.DataFrame:
+    """Fetch Dutch TTF Natural Gas futures from Yahoo Finance and forward-fill weekend gaps."""
+    ttf = yf.download("TTF=F", start=start_str, end=end_str, progress=False)
 
-df_prices.columns = ["Date", "Price_EUR_MWh"]
-df_prices["Date"] = pd.to_datetime(df_prices["Date"])
+    if isinstance(ttf.columns, pd.MultiIndex):
+        df = ttf["Close"].reset_index()
+    else:
+        df = ttf[["Close"]].reset_index()
 
-# Forward-fill weekend market gaps to align with continuous 365-day storage data
-full_dates = pd.date_range(start=start_str, end=end_str)
-df_prices = df_prices.set_index("Date").reindex(full_dates).ffill().reset_index()
-df_prices.rename(columns={"index": "Date"}, inplace=True)
-df_prices["Price_Change_EUR"] = df_prices["Price_EUR_MWh"].diff().fillna(0)
+    df.columns = ["Date", "Price_EUR_MWh"]
+    df["Date"] = pd.to_datetime(df["Date"])
 
-# ===================================================================
-# 4. MERGE DATASETS & SAVE CSV
-# ===================================================================
-print("--- STEP 4: Merging Datasets ---")
-df_merged = pd.merge(df_regional, df_weather[["Date", "Temp_Anomaly"]], on="Date", how="inner")
-df_final = pd.merge(df_merged, df_prices[["Date", "Price_EUR_MWh", "Price_Change_EUR"]], on="Date", how="inner")
+    # Reindex to continuous calendar dates
+    date_range = pd.date_range(start=start_str, end=end_str)
+    df = df.set_index("Date").reindex(date_range).ffill().reset_index()
+    df.rename(columns={"index": "Date"}, inplace=True)
+    df["Price_Change_EUR"] = df["Price_EUR_MWh"].diff().fillna(0)
 
-output_csv = "final_regression_dataset.csv"
-df_final.to_csv(output_csv, index=False)
-print(f"Dataset compiled successfully into '{output_csv}'!")
+    return df
 
-# ===================================================================
-# 5. ESTIMATE OLS REGRESSION (statsmodels with HAC Correction)
-# ===================================================================
-print("\n==================================================================")
-print("             OLS REGRESSION RESULTS (HAC ADJUSTED)                ")
-print("==================================================================")
 
-# Dependent Variable (Y): Daily Net Storage Activity (GWh)
-Y = df_final["Net_Injection_GWh"]
+def run_ols_pipeline():
+    print("Pulling storage data...")
+    df_storage = fetch_gie_storage_data(TARGET_COUNTRIES, ANALYSIS_START_DATE)
 
-# Independent Variables (X): Fill %, Temp Anomaly, and Price Momentum
-X = df_final[["Fill_Level_Pct", "Temp_Anomaly", "Price_Change_EUR"]]
+    start_date = df_storage["Date"].min().strftime("%Y-%m-%d")
+    end_date = df_storage["Date"].max().strftime("%Y-%m-%d")
 
-# Add intercept (constant) term required by statsmodels
-X = sm.add_constant(X)
+    print(f"Fetching weather and TTF market data ({start_date} to {end_date})...")
+    df_weather = fetch_openmeteo_weather(start_date, end_date)
+    df_prices = fetch_ttf_prices(start_date, end_date)
 
-# Fit OLS model using Newey-West HAC standard errors (7-day lag window)
-model = sm.OLS(Y, X).fit(cov_type='HAC', cov_kwds={'maxlags': 7})
+    # Merge inputs
+    df = (
+        df_storage
+        .merge(df_weather[["Date", "Temp_Anomaly"]], on="Date", how="inner")
+        .merge(df_prices[["Date", "Price_EUR_MWh", "Price_Change_EUR"]], on="Date", how="inner")
+    )
 
-# Print summary table
-print(model.summary())
+    df.to_csv("final_regression_dataset.csv", index=False)
+    print("Dataset exported to 'final_regression_dataset.csv'.")
+
+    # Model estimation
+    y = df["Net_Injection_GWh"]
+    X = sm.add_constant(df[["Fill_Level_Pct", "Temp_Anomaly", "Price_Change_EUR"]])
+
+    # 7-lag Newey-West HAC correction for serial correlation
+    model = sm.OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags": 7})
+    print("\n" + "=" * 60)
+    print(model.summary())
+
+
+if __name__ == "__main__":
+    run_ols_pipeline()
